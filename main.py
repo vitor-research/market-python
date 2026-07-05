@@ -21,7 +21,7 @@ from app import load_models_into_memory, fetch_signals
 # Carrega os dados do arquivo .env
 load_dotenv()
 
-load_models_into_memory()
+# load_models_into_memory()
 
 # ==========================================
 # CONFIGURAÇÕES E ESTADO GLOBAL
@@ -63,11 +63,9 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 # Inicialização do cliente Hyperliquid (Mainnet)
-# Nota: O SDK Python da Hyperliquid é primariamente síncrono para operações REST.
-Account.enable_unaudited_hdwallet_features()
-account = Account.from_mnemonic(Env.PRIVATE_KEY)
+account = Account.from_key(Env.PRIVATE_KEY)
 info_client = Info(constants.MAINNET_API_URL, skip_ws=True)
-exchange_client = Exchange(account, constants.MAINNET_API_URL)
+exchange_client = Exchange(account, constants.MAINNET_API_URL, vault_address=account.address)
 
 # ==========================================
 # FUNÇÕES UTILITÁRIAS
@@ -90,6 +88,14 @@ def format_px(price: float) -> str:
         
     return str_price
 
+def get_coin_index(coin: str) -> int:
+    meta_and_asset_ctxs = info_client.meta_and_asset_ctxs()
+    universe = meta_and_asset_ctxs[0]["universe"]
+    for i, asset in enumerate(universe):
+        if asset["name"] == coin:
+            return i
+    raise ValueError(f"Moeda {coin} não encontrada no universo.")
+
 # ==========================================
 # LÓGICA DE NEGOCIAÇÃO (HYPERLIQUID)
 # ==========================================
@@ -98,15 +104,15 @@ def cancel_position(position: dict):
     mids = info_client.all_mids()
     price = float(mids[position["coin"]])
     adjusted_price = price * 1.001 if position["is_buy"] else price * 0.998
-    final_price = format_px(adjusted_price)
+    final_price = float(format_px(adjusted_price))
     
     # Construção manual da ordem de cancelamento similar ao TS
     order_req = {
-        "name": position["coin"],
+        "coin": position["coin"],
         "is_buy": not position["is_buy"],
-        "size": float(position["size"]) * 2,
-        "r": True,
-        "price": final_price,
+        "sz": position["size"] * 2,
+        "reduce_only": True,
+        "limit_px": final_price,
         "order_type": {
             "trigger": {
                 "isMarket": True,
@@ -123,58 +129,60 @@ def make_order(coin: str, usd_size: float, leverage: int, tp: float, sl: float, 
     meta_and_asset_ctxs = info_client.meta_and_asset_ctxs()
     universe = meta_and_asset_ctxs[0]["universe"]
     asset_ctxs = meta_and_asset_ctxs[1]
+
+    coin_index = get_coin_index(coin)
     
     
-    max_leverage = universe[coin]["maxLeverage"]
+    max_leverage = universe[coin_index]["maxLeverage"]
     safe_leverage = min(max(1, round(leverage)), max_leverage)
-    sz_decimals = universe[coin]["szDecimals"]
+    sz_decimals = universe[coin_index]["szDecimals"]
     
-    price = float(asset_ctxs[coin]["markPx"])
+    price = float(asset_ctxs[coin_index]["markPx"])
     adjusted_price = price * 1.001 if is_buy else price * 0.998
-    final_price = format_px(adjusted_price)
+    final_price = float(format_px(adjusted_price))
     
-    size = format_sz((usd_size * safe_leverage) / float(final_price), sz_decimals)
+    size = format_sz((usd_size * safe_leverage) / final_price, sz_decimals)
     
     # Atualiza Alavancagem
     exchange_client.update_leverage(safe_leverage, coin, is_cross=True)
     
-    str_tp = format_px(tp)
-    str_sl = format_px(sl)
+    tp = float(format_px(tp))
+    sl = float(format_px(sl))
     
     # Estrutura de múltiplas ordens (Entry + TP + SL)
     orders_req = [
         {
-            "name": coin,
+            "coin": coin,
             "is_buy": is_buy,
-            "size": size,
-            "r": False,
-            "price": final_price,
+            "sz": size,
+            "reduce_only": False,
+            "limit_px": final_price,
             "order_type": {"limit": {"tif": "Gtc"}}
         },
         {
-            "name": coin,
+            "coin": coin,
             "is_buy": not is_buy,
-            "size": size * 2,
-            "r": True,
-            "price": str_tp,
+            "sz": size * 2,
+            "reduce_only": True,
+            "limit_px": tp,
             "order_type": {
                 "trigger": {
                     "isMarket": True,
-                    "triggerPx": str_tp,
+                    "triggerPx": tp,
                     "tpsl": "tp"
                 }
             }
         },
         {
-            "name": coin,
+            "coin": coin,
             "is_buy": not is_buy,
-            "size": size * 2,
-            "r": True,
-            "price": str_sl,
+            "sz": size * 2,
+            "reduce_only": True,
+            "limit_px": sl,
             "order_type": {
                 "trigger": {
                     "isMarket": True,
-                    "triggerPx": str_sl,
+                    "triggerPx": sl,
                     "tpsl": "sl"
                 }
             }
@@ -186,6 +194,7 @@ def make_order(coin: str, usd_size: float, leverage: int, tp: float, sl: float, 
     # Extrai o OID da ordem limit (resting)
     try:
         resting_oid = None
+        print(response)
         for status in response["data"]["statuses"]:
             if isinstance(status, dict) and "resting" in status:
                 resting_oid = status["resting"]["oid"]
@@ -195,9 +204,9 @@ def make_order(coin: str, usd_size: float, leverage: int, tp: float, sl: float, 
             ACCOUNT_DETAILS["positions"].append({
                 "oid": resting_oid,
                 "coin": coin,
-                "size": size,
-                "notional": size * float(final_price),
-                "entry_price": float(final_price),
+                "size": float(size),
+                "notional": size * final_price,
+                "entry_price": final_price,
                 "unrealized_pnl": 0.0,
                 "is_buy": is_buy,
                 "time_open": int(time.time() * 1000)
@@ -268,7 +277,7 @@ def update_account_info(wallet_address: str):
     ACCOUNT_DETAILS["positions"] = new_positions
 
 async def scan_task():
-    try:
+    # try:
         wallet_address = account.address
         n_positions = len(ACCOUNT_DETAILS["positions"])
         
@@ -286,9 +295,9 @@ async def scan_task():
         )
         
         if condition_met:
-            result1 = await fetch_signals(0.60)
+            result1 = await fetch_signals(0.10)
             await asyncio.sleep(1.0) # sleep assíncrono
-            result2 = await fetch_signals(0.60)
+            result2 = await fetch_signals(0.10)
             
             if len(result1) > 0 and len(result2) > 0 and result1[0]["coin"] == result2[0]["coin"]:
                 signal = result2[0]
@@ -306,8 +315,8 @@ async def scan_task():
                 else:
                     make_order(coin, ACCOUNT_DETAILS["balance"], leverage, tp, sl, is_buy)
                     
-    except Exception as e:
-        print(f"Erro no scan: {e}")
+    # except Exception as e:
+    #     print(f"Erro no scan: {e}")
 
 # ==========================================
 # ROTAS FASTAPI (Substitui o bloco fetch do Worker)
