@@ -5,17 +5,10 @@ import numpy as np
 import pandas as pd
 import joblib
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify
 import warnings
-from flask_cors import CORS # 1. Importe a biblioteca
+from typing import List, Dict, Any
 
 warnings.filterwarnings("ignore")
-
-
-app = Flask(__name__)
-
-# 2. Habilite o CORS para todas as rotas e todas as origens
-CORS(app)
 
 # Configurações Base
 INTERVAL = "15m"
@@ -46,8 +39,6 @@ def load_models_into_memory():
         
     print(f"[Sistema] {len(MODELS_CACHE)} modelos carregados na RAM com sucesso!")
 
-# Carrega os modelos assim que o script é executado
-load_models_into_memory()
 
 # ==============================================================================
 # FUNÇÕES DE DADOS
@@ -81,16 +72,15 @@ def get_recent_data(symbol):
 # ==============================================================================
 # ENDPOINTS DA API
 # ==============================================================================
-@app.route('/scan', methods=['GET'])
-def scan_market():
+async def fetch_signals(threshold_param: float = 0.60) -> List[Dict[str, Any]]:
     """Escaneia o mercado usando os modelos já carregados na RAM."""
     try:
-        threshold_param = float(request.args.get('threshold', 0.60))
+        threshold_param = float(threshold_param)
     except ValueError:
-        return jsonify({"error": "O parâmetro threshold deve ser um número."}), 400
+        return {"error": "O parâmetro threshold deve ser um número."}
 
     if not MODELS_CACHE:
-        return jsonify({"error": "Modelos não carregados na RAM. Rode o treinamento e faça /reload."}), 404
+        return {"error": "Modelos não carregados na RAM. Rode o treinamento e faça /reload."}
 
     features = ['ret_1', 'ret_3', 'vol_ratio', 'dist_ema_20', 'macro_trend']
     signals_found = []
@@ -132,26 +122,10 @@ def scan_market():
                 "leverage": int(alavancagem_ideal)
             })
 
-    return jsonify({
-        "status": "sucesso",
-        "total_signals": len(signals_found),
-        "signals": signals_found
-    }), 200
+    # return {
+    #     "status": "sucesso",
+    #     "total_signals": len(signals_found),
+    #     "signals": signals_found
+    # }
 
-
-@app.route('/reload', methods=['POST'])
-def reload_models():
-    """
-    Endpoint administrativo. 
-    Use após rodar o treinador.py para atualizar os cérebros sem reiniciar a API.
-    """
-    load_models_into_memory()
-    return jsonify({
-        "status": "sucesso", 
-        "mensagem": f"{len(MODELS_CACHE)} modelos atualizados na memória RAM."
-    }), 200
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False) 
-    # debug=False é recomendado em produção para evitar recarregamentos duplos
+    return signals_found
