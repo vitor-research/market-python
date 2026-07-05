@@ -4,7 +4,5 @@ numpy==2.0.2
 scikit-learn==1.6.1
 requests==2.32.3
 joblib==1.5.3
-
---extra-index-url https://pypi.org/simple
-pandas==2.2.2
+pandas
 # gunicorn==22.0.0
