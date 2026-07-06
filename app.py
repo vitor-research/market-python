@@ -16,8 +16,7 @@ app = Flask(__name__)
 CORS(app)
 
 COINS = [
-    "BTC", "ETH", "SOL", "ARB", "OP", "WIF", "SUI", "APT", 
-      "RENDER", "NEAR", "AVAX", "LINK", "DOGE", "ONDO", "PYTH", "TIA", "SEI", "IMX"
+    "BTC", "ETH", "SOL", "ARB", "OP", "WIF", "SUI", "APT", "RENDER", "NEAR", "AVAX", "LINK", "DOGE", "ONDO", "PYTH", "TIA", "SEI", "IMX"
 ]
 
 # ==============================================================================
@@ -56,51 +55,54 @@ def scan_opportunities(threshold_param):
     for coin in COINS:
         df = get_data(coin, days=3)
         print(coin)
-        # Recalcular features
-        tr = pd.concat([df['h']-df['l'], abs(df['h']-df['c'].shift()), abs(df['l']-df['c'].shift())], axis=1).max(axis=1)
-        df['atr'] = tr.rolling(14).mean()
-        df['vol_rel'] = df['v'] / df['v'].rolling(20).mean()
-        df['mom'] = df['mid'].pct_change(5)
-        
-        curr_mid = df['mid'].iloc[-1]
-        curr_atr = df['atr'].iloc[-1]
-        atr_pct = curr_atr /curr_mid
-        features = df[['mom', 'atr', 'vol_rel']].iloc[[-1]].values.astype(np.float32)
-        
-        # Obter a sessão ONNX da moeda
-        sess = MODELS_CACHE[coin]
-        input_name = sess.get_inputs()[0].name
-        
-        # Executar inferência: 
-        # O resultado do ONNX para classificação geralmente retorna 
-        # [0] = label final, [1] = probabilidades
-        label, result = sess.run(None, {input_name: features})
-        
-        # Ajuste: probs costuma ser uma lista de dicionários ou array dependendo da versão
-        # Vamos pegar a probabilidade real (geralmente indexada como [0])
-        probs = result[0]
-        probs = [0, probs.get(1,0), probs.get(-1, 0)]
-        
-        
-        # Probs: [Short, Neutro, Long]
-        if probs[2] > threshold_param:
-            opportunities.append({
-                "coin": coin,
-                "is_buy": True,
-                "prob": probs[2],
-                "tp": round(atr_pct * 1.5, 6),
-                "sl": round(atr_pct * 1.0, 6),
-                "leverage": 4
-            })
-        elif probs[0] > threshold_param:
-            opportunities.append({
-                "coin": coin,
-                "is_buy": False,
-                "prob": probs[0],
-                "tp": round(1 - (atr_pct * 1.5), 6),
-                "sl": round(1 + (atr_pct * 1.0), 6),
-                "leverage": 4
-            })
+        try:
+            # Recalcular features
+            tr = pd.concat([df['h']-df['l'], abs(df['h']-df['c'].shift()), abs(df['l']-df['c'].shift())], axis=1).max(axis=1)
+            df['atr'] = tr.rolling(14).mean()
+            df['vol_rel'] = df['v'] / df['v'].rolling(20).mean()
+            df['mom'] = df['mid'].pct_change(5)
+            
+            curr_mid = df['mid'].iloc[-1]
+            curr_atr = df['atr'].iloc[-1]
+            atr_pct = curr_atr /curr_mid
+            features = df[['mom', 'atr', 'vol_rel']].iloc[[-1]].values.astype(np.float32)
+            
+            # Obter a sessão ONNX da moeda
+            sess = MODELS_CACHE[coin]
+            input_name = sess.get_inputs()[0].name
+            
+            # Executar inferência: 
+            # O resultado do ONNX para classificação geralmente retorna 
+            # [0] = label final, [1] = probabilidades
+            label, result = sess.run(None, {input_name: features})
+            
+            # Ajuste: probs costuma ser uma lista de dicionários ou array dependendo da versão
+            # Vamos pegar a probabilidade real (geralmente indexada como [0])
+            probs = result[0]
+            probs = [0, probs.get(1,0), probs.get(-1, 0)]
+            
+            
+            # Probs: [Short, Neutro, Long]
+            if probs[2] > threshold_param:
+                opportunities.append({
+                    "coin": coin,
+                    "is_buy": True,
+                    "prob": probs[2],
+                    "tp": round(atr_pct * 1.5, 6),
+                    "sl": round(atr_pct * 1.0, 6),
+                    "leverage": 4
+                })
+            elif probs[0] > threshold_param:
+                opportunities.append({
+                    "coin": coin,
+                    "is_buy": False,
+                    "prob": probs[0],
+                    "tp": round(1 - (atr_pct * 1.5), 6),
+                    "sl": round(1 + (atr_pct * 1.0), 6),
+                    "leverage": 4
+                })
+        except Exception as e:
+            print(e)
     
     opportunities.sort(key=lambda x: x['prob'], reverse=True)
     
