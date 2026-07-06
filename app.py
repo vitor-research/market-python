@@ -48,16 +48,14 @@ def get_data(coin, days=3):
         df[['o', 'h', 'l', 'c', 'v']] = df[['o', 'h', 'l', 'c', 'v']].astype(float)
         df['mid'] = (df['h'] + df['l']) / 2
         return df
-    except Exception as e:
-        print(e, coin)
-        return None
+    except: return None
 
 def scan_opportunities(threshold_param):
     opportunities = []
     
     for coin in COINS:
         df = get_data(coin, days=3)
-        
+        print(coin)
         # Recalcular features
         tr = pd.concat([df['h']-df['l'], abs(df['h']-df['c'].shift()), abs(df['l']-df['c'].shift())], axis=1).max(axis=1)
         df['atr'] = tr.rolling(14).mean()
