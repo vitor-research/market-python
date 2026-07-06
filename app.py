@@ -64,7 +64,7 @@ def scan_opportunities(threshold_param):
             
             curr_mid = df['mid'].iloc[-1]
             curr_atr = df['atr'].iloc[-1]
-            atr_pct = 1 + curr_atr/curr_mid
+            atr_pct = curr_atr/curr_mid
             features = df[['mom', 'atr', 'vol_rel']].iloc[[-1]].values.astype(np.float32)
             
             # Obter a sessão ONNX da moeda
@@ -88,8 +88,8 @@ def scan_opportunities(threshold_param):
                     "coin": coin,
                     "is_buy": True,
                     "prob": probs[2],
-                    "tp": round(atr_pct * 1.5, 6),
-                    "sl": round(atr_pct * 1.0, 6),
+                    "tp": round((1 + atr_pct) * 1.5, 6),
+                    "sl": round((1 - atr_pct) * 1.0, 6),
                     "leverage": 4
                 })
             elif probs[0] > threshold_param:
@@ -97,8 +97,8 @@ def scan_opportunities(threshold_param):
                     "coin": coin,
                     "is_buy": False,
                     "prob": probs[0],
-                    "tp": round(atr_pct * 1.5, 6),
-                    "sl": round(atr_pct * 1.0, 6),
+                    "tp": round((1 - atr_pct) * 1.5, 6),
+                    "sl": round((1 + atr_pct) * 1.0, 6),
                     "leverage": 4
                 })
         except Exception as e:
