@@ -1,10 +1,9 @@
-import os
-import glob
 import requests
 import pandas as pd
-import joblib
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
+import onnxruntime as rt
+import numpy as np
 import warnings
 from flask_cors import CORS # 1. Importe a biblioteca
 
@@ -15,13 +14,6 @@ app = Flask(__name__)
 
 # 2. Habilite o CORS para todas as rotas e todas as origens
 CORS(app)
-
-# Configurações Base
-INTERVAL = "15m"
-TAKE_PROFIT_PCT = 0.010
-STOP_LOSS_PCT = 0.005
-RISK_ACCOUNT = 0.02
-BASE_URL = "https://api.hyperliquid.xyz/info"
 
 COINS = [
     "BTC", "ETH", "SOL", "ARB", "OP", "WIF", "SUI", "APT", 
@@ -34,15 +26,15 @@ COINS = [
 MODELS_CACHE = {}
 
 def load_models_into_memory():
-    """Carrega todos os arquivos .joblib do disco para a memória RAM."""
     global MODELS_CACHE
     MODELS_CACHE.clear()
     
     for coin in COINS:
-        # Carrega no dicionário global
-        MODELS_CACHE[coin] = joblib.load(f"./models/{coin}_model.pkl")
+        model_path = f"./models/{coin}_model.onnx"
+        # Cria uma sessão de inferência para cada moeda
+        MODELS_CACHE[coin] = rt.InferenceSession(model_path)
         
-    print(f"[Sistema] {len(MODELS_CACHE)} modelos carregados na RAM com sucesso!")
+    print(f"[Sistema] {len(MODELS_CACHE)} modelos ONNX carregados na RAM!")
 
 # Carrega os modelos assim que o script é executado
 load_models_into_memory()
@@ -73,9 +65,22 @@ def scan_opportunities(threshold_param):
         curr_mid = df['mid'].iloc[-1]
         curr_atr = df['atr'].iloc[-1]
         atr_pct = curr_atr /curr_mid
-        features = df[['mom', 'atr', 'vol_rel']].iloc[[-1]]
+        features = df[['mom', 'atr', 'vol_rel']].iloc[[-1]].values.astype(np.float32)
         
-        probs = MODELS_CACHE[coin].predict_proba(features)[0]
+        # Obter a sessão ONNX da moeda
+        sess = MODELS_CACHE[coin]
+        input_name = sess.get_inputs()[0].name
+        
+        # Executar inferência: 
+        # O resultado do ONNX para classificação geralmente retorna 
+        # [0] = label final, [1] = probabilidades
+        label, result = sess.run(None, {input_name: features})
+        
+        # Ajuste: probs costuma ser uma lista de dicionários ou array dependendo da versão
+        # Vamos pegar a probabilidade real (geralmente indexada como [0])
+        probs = result[0]
+        probs = [0, probs.get(1,0), probs.get(-1, 0)]
+        
         
         # Probs: [Short, Neutro, Long]
         if probs[2] > threshold_param:
