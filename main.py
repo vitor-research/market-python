@@ -65,6 +65,7 @@ app.add_middleware(
 # Inicialização do cliente Hyperliquid (Mainnet)
 account = Account.from_key(Env.PRIVATE_KEY)
 info_client = Info(constants.MAINNET_API_URL, skip_ws=True)
+print(account.address)
 exchange_client = Exchange(account, constants.MAINNET_API_URL, vault_address=account.address)
 
 # ==========================================
