@@ -54,7 +54,7 @@ def scan_opportunities(threshold_param):
     opportunities = []
     
     for coin in COINS:
-        df = get_data(coin, days=1)
+        df = get_data(coin, days=3)
         
         # Recalcular features
         tr = pd.concat([df['h']-df['l'], abs(df['h']-df['c'].shift()), abs(df['l']-df['c'].shift())], axis=1).max(axis=1)
