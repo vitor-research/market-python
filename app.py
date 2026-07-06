@@ -48,7 +48,9 @@ def get_data(coin, days=3):
         df[['o', 'h', 'l', 'c', 'v']] = df[['o', 'h', 'l', 'c', 'v']].astype(float)
         df['mid'] = (df['h'] + df['l']) / 2
         return df
-    except: return None
+    except Exception as e:
+        print(e, coin)
+        return None
 
 def scan_opportunities(threshold_param):
     opportunities = []
