@@ -88,8 +88,8 @@ def scan_opportunities(threshold_param):
                     "coin": coin,
                     "is_buy": True,
                     "prob": probs[2],
-                    "tp": round(1 + (atr_pct * 3.0), 6),
-                    "sl": round(1 - (atr_pct * 2.0), 6),
+                    "tp": round(1 + (atr_pct * 1.5), 6),
+                    "sl": round(1 - (atr_pct * 1.0), 6),
                     "leverage": 4
                 })
             elif probs[0] > threshold_param:
@@ -97,8 +97,8 @@ def scan_opportunities(threshold_param):
                     "coin": coin,
                     "is_buy": False,
                     "prob": probs[0],
-                    "tp": round(1 - (atr_pct * 3.0), 6),
-                    "sl": round(1 + (atr_pct * 2.0), 6),
+                    "tp": round(1 - (atr_pct * 1.5), 6),
+                    "sl": round(1 + (atr_pct * 1.0), 6),
                     "leverage": 4
                 })
         except Exception as e:
