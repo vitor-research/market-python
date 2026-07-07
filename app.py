@@ -65,6 +65,7 @@ def scan_opportunities(threshold_param):
             curr_mid = df['mid'].iloc[-1]
             curr_atr = df['atr'].iloc[-1]
             atr_pct = curr_atr/curr_mid * 5
+            atr_pct = 0
             features = df[['mom', 'atr', 'vol_rel']].iloc[[-1]].values.astype(np.float32)
             
             # Obter a sessão ONNX da moeda
