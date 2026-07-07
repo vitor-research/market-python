@@ -79,7 +79,7 @@ def scan_opportunities(threshold_param):
             # Ajuste: probs costuma ser uma lista de dicionários ou array dependendo da versão
             # Vamos pegar a probabilidade real (geralmente indexada como [0])
             probs = result[0]
-            probs = [0, probs.get(1,0), probs.get(-1, 0)]
+            probs = [probs.get(-1,0), 0, probs.get(1, 0)]
             
             
             # Probs: [Short, Neutro, Long]
