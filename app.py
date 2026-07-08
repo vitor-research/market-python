@@ -6,6 +6,7 @@ import onnxruntime as rt
 import numpy as np
 import warnings
 from flask_cors import CORS # 1. Importe a biblioteca
+from execute import get_live_signals
 
 warnings.filterwarnings("ignore")
 
@@ -36,7 +37,7 @@ def load_models_into_memory():
     print(f"[Sistema] {len(MODELS_CACHE)} modelos ONNX carregados na RAM!")
 
 # Carrega os modelos assim que o script é executado
-load_models_into_memory()
+# load_models_into_memory()
 
 def get_data(coin, days=3):
     url = "https://api.hyperliquid.xyz/info"
@@ -89,8 +90,8 @@ def scan_opportunities(threshold_param):
                     "coin": coin,
                     "is_buy": True,
                     "prob": probs[2],
-                    "tp": round(1.01 + atr_pct , 6),
-                    "sl": round(0.9925 - atr_pct, 6),
+                    "tp": round(1.0 + atr_pct , 6),
+                    "sl": round(1.0 - atr_pct, 6),
                     "leverage": 4
                 })
             elif probs[0] > threshold_param:
@@ -98,8 +99,8 @@ def scan_opportunities(threshold_param):
                     "coin": coin,
                     "is_buy": False,
                     "prob": probs[0],
-                    "tp": round(0.99 - atr_pct, 6),
-                    "sl": round(1.0075 + atr_pct, 6),
+                    "tp": round(1.0 - atr_pct, 6),
+                    "sl": round(1.0 + atr_pct, 6),
                     "leverage": 4
                 })
         except Exception as e:
@@ -115,15 +116,15 @@ def scan_opportunities(threshold_param):
 @app.route('/scan', methods=['GET'])
 def scan_market():
     """Escaneia o mercado usando os modelos já carregados na RAM."""
-    try:
-        threshold_param = float(request.args.get('threshold', 0.60))
-    except ValueError:
-        return jsonify({"error": "O parâmetro threshold deve ser um número."}), 400
+    # try:
+    #     threshold_param = float(request.args.get('threshold', 0.60))
+    # except ValueError:
+    #     return jsonify({"error": "O parâmetro threshold deve ser um número."}), 400
 
-    if not MODELS_CACHE:
-        return jsonify({"error": "Modelos não carregados na RAM. Rode o treinamento e faça /reload."}), 404
+    # if not MODELS_CACHE:
+    #     return jsonify({"error": "Modelos não carregados na RAM. Rode o treinamento e faça /reload."}), 404
 
-    signals_found = scan_opportunities(threshold_param)
+    signals_found = get_live_signals()
 
     return jsonify({
         "status": "sucesso",
@@ -138,7 +139,7 @@ def reload_models():
     Endpoint administrativo. 
     Use após rodar o treinador.py para atualizar os cérebros sem reiniciar a API.
     """
-    load_models_into_memory()
+    # load_models_into_memory()
     return jsonify({
         "status": "sucesso", 
         "mensagem": f"{len(MODELS_CACHE)} modelos atualizados na memória RAM."

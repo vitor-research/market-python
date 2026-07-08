@@ -4,4 +4,5 @@ numpy==2.5.1
 requests==2.32.3
 pandas==3.0.3
 onnxruntime==1.27.0
+ccxt==4.5.64
 # gunicorn==22.0.0
