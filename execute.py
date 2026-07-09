@@ -71,14 +71,12 @@ def check_pairs_to_close(current_coins_in_positions):
     pairs_to_close = []
     
     # 1. Identificar quais pares estão com posições abertas
-    active_pairs = {}
-    for coin in current_coins_in_positions:
-        for pair_id, meta in portfolio.items():
-            if coin == meta['asset_y'].split("/")[0] or coin == meta['asset_x'].split("/")[0]:
-                active_pairs[pair_id] = meta
 
     # 2. Calcular Z-Score em tempo real para cada par ativo
-    for pair_id, meta in active_pairs.items():
+    for pair_id, meta in portfolio.items():
+        if not (meta['asset_y'] in current_coins_in_positions) or not (meta["asset_x"] in current_coins_in_positions):
+            continue
+
         # Busca dados atualizados para calcular o Z-Score agora
         prices = fetch_live_data([meta['asset_y'], meta['asset_x']], CFG)
         
