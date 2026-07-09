@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import onnxruntime as rt
 import ccxt
+from urllib.parse import unquote
 
 class Config:
     exchange_id = "hyperliquid"
@@ -50,6 +51,63 @@ def fetch_live_data(symbols: list, cfg: Config) -> pd.DataFrame:
             
     if not data: return pd.DataFrame()
     return pd.DataFrame(data).ffill().dropna()
+
+def check_pairs_to_close(current_coins_in_positions):
+    """
+    Verifica o Z-Score atual de todos os pares ativos.
+    Se |Z-Score| > 4.5, encerra as posições dos ativos envolvidos.
+    """
+    # print(">> Verificando integridade estatística dos pares (Stop Loss Estrutural)...")
+
+    portfolio_path = os.path.join(CFG.model_dir, "portfolio.json")
+    if not os.path.exists(portfolio_path): return []
+            
+    with open(portfolio_path, "r") as f:
+        portfolio = json.load(f)
+        
+    if not portfolio: return []
+
+
+    pairs_to_close = []
+    
+    # 1. Identificar quais pares estão com posições abertas
+    active_pairs = {}
+    for coin in current_coins_in_positions:
+        for pair_id, meta in portfolio.items():
+            if coin == meta['asset_y'].split("/")[0] or coin == meta['asset_x'].split("/")[0]:
+                active_pairs[pair_id] = meta
+
+    # 2. Calcular Z-Score em tempo real para cada par ativo
+    for pair_id, meta in active_pairs.items():
+        # Busca dados atualizados para calcular o Z-Score agora
+        prices = fetch_live_data([meta['asset_y'], meta['asset_x']], CFG)
+        
+        if prices.empty: continue
+        
+        # Calcula Z-Score (usando a mesma lógica do backtest)
+        spread = prices[meta['asset_y']] - meta['beta'] * prices[meta['asset_x']]
+        mean = spread.rolling(CFG.zscore_window).mean().iloc[-1]
+        std = spread.rolling(CFG.zscore_window).std().iloc[-1]
+        
+        current_z = (spread.iloc[-1] - mean) / (std + 1e-9)
+        
+        # print(f"🔍 Monitoramento [{pair_id}]: Z-Score = {current_z:.2f}")
+
+        # 3. Limite de Segurança de 4.5
+        if abs(current_z) > 4.5 or abs(current_z) < 1.5:
+            # print(f"🚨 STOP LOSS ESTRUTURAL [ {pair_id} ]! Z-Score: {current_z:.2f}")
+            
+            # Fecha as duas pernas do par
+            # Aqui assumimos que você tem uma função para fechar (market order oposta ou zerar)
+            # Exemplo genérico de fechamento:
+            for asset in [meta['asset_y'].split("/")[0], meta['asset_x'].split("/")[0]]:
+                # Comando para zerar a posição (Hyperliquid geralmente aceita volume 0 para zerar)
+                # Substitua pela sua função real de envio de ordem
+                pairs_to_close.append(asset)
+            
+            # print(f"✅ Par {pair_id} encerrado com sucesso.")
+    
+    return pairs_to_close
 
 def build_features(price_y: pd.Series, price_x: pd.Series, beta: float, cfg: Config) -> pd.DataFrame:
     # A ordem exata das features é crucial para o ONNX

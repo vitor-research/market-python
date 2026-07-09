@@ -6,7 +6,8 @@ import onnxruntime as rt
 import numpy as np
 import warnings
 from flask_cors import CORS # 1. Importe a biblioteca
-from execute import get_live_signals
+from execute import get_live_signals, check_pairs_to_close
+import json
 
 warnings.filterwarnings("ignore")
 
@@ -132,6 +133,21 @@ def scan_market():
         "signals": signals_found
     }), 200
 
+@app.route("/verify_pairs")
+def verify_pairs():
+    try:
+        pairs = json.loads(request.args.get('pairs', "[]"))
+    except Exception as e:
+        return jsonify({"error": e}), 400
+
+
+    pairs = check_pairs_to_close(pairs)
+
+    return jsonify({
+        "status": "sucesso",
+        "total_signals": len(pairs),
+        "signals": pairs
+    }), 200
 
 @app.route('/reload', methods=['POST'])
 def reload_models():
