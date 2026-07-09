@@ -104,7 +104,7 @@ def get_live_signals() -> list:
         X_scaled = (current_features - scaler_mean) / scaler_scale
         
         # 2. Inferência ONNX
-        sess = rt.InferenceSession(meta["onnx_model"].replace(":","_"), providers=['CPUExecutionProvider'])
+        sess = rt.InferenceSession(meta["onnx_model"], providers=['CPUExecutionProvider'])
         input_name = sess.get_inputs()[0].name
         label_name = sess.get_outputs()[1].name 
         pred_onx = sess.run([label_name], {input_name: X_scaled.astype(np.float32)})[0]
