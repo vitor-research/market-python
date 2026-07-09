@@ -49,7 +49,7 @@ def fetch_live_data(symbols: list, cfg: Config) -> pd.DataFrame:
             continue
             
     if not data: return pd.DataFrame()
-    return pd.DataFrame(data).fillna(method="ffill").dropna()
+    return pd.DataFrame(data).ffill().dropna()
 
 def build_features(price_y: pd.Series, price_x: pd.Series, beta: float, cfg: Config) -> pd.DataFrame:
     # A ordem exata das features é crucial para o ONNX
