@@ -74,7 +74,7 @@ def check_pairs_to_close(current_coins_in_positions):
 
     # 2. Calcular Z-Score em tempo real para cada par ativo
     for pair_id, meta in portfolio.items():
-        if not (meta['asset_y'] in current_coins_in_positions) or not (meta["asset_x"] in current_coins_in_positions):
+        if not (meta['asset_y'].split("/")[0] in current_coins_in_positions) or not (meta["asset_x"].split("/")[0] in current_coins_in_positions):
             continue
 
         # Busca dados atualizados para calcular o Z-Score agora
