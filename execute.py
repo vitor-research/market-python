@@ -73,7 +73,17 @@ def fetch_candle_data(coin):
 
 def get_market_matrix():
     universe = requests.post(f"{base_url}/info", json={"type": "meta"}).json().get("universe", [])
-    coins = [c["name"] for c in universe][:UNIVERSE_SIZE + 10]
+    blacklist = ["PEPE", "WIF", "DOGE", "SHIB", "BONK", "FLOKI", "kPEPE"] 
+    
+    filtered_coins = []
+    for c in universe:
+        name = c["name"]
+        # Filtro: Exclui moedas da blacklist e garante que o nome não contenha palavras comuns de memes
+        if name not in blacklist and len(name) < 10: 
+            filtered_coins.append(name)
+            
+    # Pegamos as moedas que restaram, limitando ao seu UNIVERSE_SIZE
+    coins = filtered_coins[:UNIVERSE_SIZE + 10]
     
     data = {}
     for coin in coins:
@@ -83,6 +93,7 @@ def get_market_matrix():
         
     df = pd.DataFrame(data).dropna(axis=1, thresh=int(DAYS_HISTORY*24*0.9)).ffill().bfill()
     return df[df.columns[:UNIVERSE_SIZE]]
+
 
 # ==========================================
 # 4. O CÉREBRO DO ROBÔ (API PARA O TYPESCRIPT)
