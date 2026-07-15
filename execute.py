@@ -127,7 +127,7 @@ def run_trading_cycle(positions, verify_new_pair=False, train_mode=False):
     del returns_df
     gc.collect()
 
-    model = StatArbAutoencoder(X_scaled.shape[1])
+    model = StatArbAutoencoder(X_scaled.shape[1], BOTTLENECK_DIM)
     criterion = nn.MSELoss()
 
     # =========================================================
@@ -245,7 +245,7 @@ if __name__ == "__main__":
     # Simula o TypeScript pedindo para treinar e buscar entradas (Roda a cada 1 hora)
     posicoes_mock = []
     print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: HORA EM HORA ---")
-    resultado_treino = run_trading_cycle(posicoes_mock, train_mode=True)
+    resultado_treino = run_trading_cycle(posicoes_mock, True)
     # print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_treino)
     
     # Se o robô sugerisse uma entrada, o TS adicionaria ela em 'posicoes_mock'. 
@@ -253,5 +253,5 @@ if __name__ == "__main__":
     posicoes_mock = ["ARB", "BTC"]
     
     print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: 5 EM 5 MINUTOS ---")
-    resultado_watchdog = run_trading_cycle(posicoes_mock, train_mode=False)
+    resultado_watchdog = run_trading_cycle(posicoes_mock, False)
     print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_watchdog)
