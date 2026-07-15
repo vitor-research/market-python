@@ -94,7 +94,6 @@ def get_market_matrix():
     df = pd.DataFrame(data).dropna(axis=1, thresh=int(DAYS_HISTORY*24*0.9)).ffill().bfill()
     return df[df.columns[:UNIVERSE_SIZE]]
 
-
 # ==========================================
 # 4. O CÉREBRO DO ROBÔ (API PARA O TYPESCRIPT)
 # ==========================================
@@ -200,7 +199,7 @@ def run_trading_cycle(positions, train_mode=True, is_retry = False):
             return {"type": "error", "msg": "Falha ao carregar o modelo treinado. Aguarde o ciclo de Treino."}
 
           else:
-            return run_trading_cycle(positions, train_mode=True, is_retry = True)
+            return run_trading_cycle(positions, train_mode=False, is_retry = True)
 
         model.eval()
 
