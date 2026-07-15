@@ -136,8 +136,7 @@ def verify_pairs():
     except Exception as e:
         return jsonify({"error": e}), 400
 
-
-    result = run_trading_cycle(pairs, False)
+    result = run_trading_cycle(pairs, False) if len(pairs) > 0 else { "type": "wait", "message": "no opened position" }
 
     return jsonify(result), 200
 

@@ -1,4 +1,5 @@
 import os
+import gc  # Garbage Collector
 import json
 import time
 import datetime
@@ -36,19 +37,16 @@ STATS_PATH = "market_stats.json"
 
 base_url = "https://api.hyperliquid.xyz"
 
-# ==========================================
-# 2. AUTOENCODER
-# ==========================================
 class StatArbAutoencoder(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, bottleneck_dim):
         super(StatArbAutoencoder, self).__init__()
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, 32), nn.ReLU(),
             nn.Linear(32, 16), nn.ReLU(),
-            nn.Linear(16, BOTTLENECK_DIM)
+            nn.Linear(16, bottleneck_dim)
         )
         self.decoder = nn.Sequential(
-            nn.Linear(BOTTLENECK_DIM, 16), nn.ReLU(),
+            nn.Linear(bottleneck_dim, 16), nn.ReLU(),
             nn.Linear(16, 32), nn.ReLU(),
             nn.Linear(32, input_dim)
         )
@@ -56,7 +54,7 @@ class StatArbAutoencoder(nn.Module):
         return self.decoder(self.encoder(x))
 
 # ==========================================
-# 3. MOTOR DE DADOS
+# MOTOR DE DADOS OTIMIZADO (LOW-MEMORY)
 # ==========================================
 def fetch_candle_data(coin):
     end_time = int(time.time() * 1000)
@@ -64,87 +62,98 @@ def fetch_candle_data(coin):
     payload = {"type": "candleSnapshot", "req": {"coin": coin, "interval": TIMEFRAME, "startTime": start_time, "endTime": end_time}}
     try:
         response = requests.post(f"{base_url}/info", json=payload).json()
-        if not response or not isinstance(response, list): return None
-        df = pd.DataFrame(response)
-        df['datetime'] = pd.to_datetime(df['t'], unit='ms')
-        df.set_index('datetime', inplace=True)
-        return pd.to_numeric(df['c'])
-    except: return None
+        if not response or not isinstance(response, list): 
+            return None
+        
+        # OTIMIZAÇÃO 1: Mantém apenas a coluna de preço de fechamento ('c')
+        prices = [float(candle['c']) for candle in response]
+        
+        # OTIMIZAÇÃO 2: Converte para float32 para economizar 50% de RAM
+        return pd.Series(prices, dtype=np.float32)
+    except: 
+        return None
 
 def get_market_matrix():
     universe = requests.post(f"{base_url}/info", json={"type": "meta"}).json().get("universe", [])
-    blacklist = ["PEPE", "WIF", "DOGE", "SHIB", "BONK", "FLOKI", "kPEPE"] 
     
-    filtered_coins = []
-    for c in universe:
-        name = c["name"]
-        # Filtro: Exclui moedas da blacklist e garante que o nome não contenha palavras comuns de memes
-        if name not in blacklist and len(name) < 10: 
-            filtered_coins.append(name)
-            
-    # Pegamos as moedas que restaram, limitando ao seu UNIVERSE_SIZE
-    coins = filtered_coins[:UNIVERSE_SIZE + 10]
+    # Filtro de qualidade rápido (removendo memecoins básicas)
+    blacklist = ["PEPE", "WIF", "DOGE", "SHIB", "BONK", "FLOKI", "kPEPE"]
+    coins = [c["name"] for c in universe if c["name"] not in blacklist][:UNIVERSE_SIZE]
     
     data = {}
     for coin in coins:
         series = fetch_candle_data(coin)
-        if series is not None and not series.empty: data[coin] = series
+        if series is not None and len(series) > (DAYS_HISTORY * 24 * 0.8): # Pelo menos 80% dos dados
+            data[coin] = series
         time.sleep(0.05)
         
-    df = pd.DataFrame(data).dropna(axis=1, thresh=int(DAYS_HISTORY*24*0.9)).ffill().bfill()
-    return df[df.columns[:UNIVERSE_SIZE]]
+    df = pd.DataFrame(data).ffill().bfill()
+    
+    # Libera o dicionário temporário da memória
+    del data
+    gc.collect()
+    
+    return df
 
 # ==========================================
-# 4. O CÉREBRO DO ROBÔ (API PARA O TYPESCRIPT)
+# CÉREBRO DO ROBÔ OTIMIZADO (LOW-MEMORY)
 # ==========================================
-def run_trading_cycle(positions, train_mode=True, is_retry = False):
+def run_trading_cycle(positions, train_mode=True, is_retry=False):
     agora = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"\n[{agora}] Iniciando ciclo de {'TREINO (1h)' if train_mode else 'WATCHDOG (5min)'}...")
-    # print(f"💰 Patrimônio Base: U$ {equity:.2f} | Posições Abertas: {len(positions)}")
-    print(f"Posições Abertas: {len(positions)}")
+    print(f"\n[{agora}] Iniciando ciclo {'TREINO' if train_mode else 'WATCHDOG'} (Modo Low-Memory)...")
 
-    # Baixa dados recentes
+    # 1. Obtenção e Tratamento de Dados (Foco em descartar o que não usa)
     prices_df = get_market_matrix()
     if prices_df.empty:
         return {"type": "error", "msg": "Falha ao baixar dados da Hyperliquid"}
 
-    returns_df = prices_df.pct_change().dropna()
-    coins_list = list(returns_df.columns)
+    coins_list = list(prices_df.columns)
+    
+    # Calcula os retornos e descarta os preços originais para economizar RAM
+    returns_df = prices_df.pct_change().dropna().astype(np.float32)
+    del prices_df 
+    gc.collect()
 
-    # Padroniza os dados
+    # Normalização
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(returns_df)
-    X_tensor = torch.FloatTensor(X_scaled)
+    X_scaled = scaler.fit_transform(returns_df).astype(np.float32)
+    X_tensor = torch.tensor(X_scaled) # Mais eficiente que FloatTensor
+    
+    # Pegamos a última linha real (numpy) para uso posterior
+    last_real_returns = returns_df.iloc[-1].values 
+    
+    # Limpeza pesada
+    del returns_df
+    gc.collect()
 
-    model = StatArbAutoencoder(X_scaled.shape[1])
+    # 2. Definição do Modelo
+    model = StatArbAutoencoder(X_scaled.shape[1], bottleneck_dim=BOTTLENECK_DIM)
     criterion = nn.MSELoss()
 
     if train_mode:
-        # ---------------------------------------------------------
-        # MODO TREINO: APRENDE O MERCADO E PROCURA ENTRADAS
-        # ---------------------------------------------------------
+        # TREINAMENTO
         optimizer = optim.Adam(model.parameters(), lr=LR)
         model.train()
-        for _ in range(EPOCHS):
+        for epoch in range(EPOCHS):
             optimizer.zero_grad()
             loss = criterion(model(X_tensor), X_tensor)
             loss.backward()
             optimizer.step()
 
-        # Salva o "Cérebro" para o Watchdog poder usar depois
+        # Salva o modelo e limpa variáveis de treino
         torch.save(model.state_dict(), MODEL_PATH)
+        del optimizer, loss
+        gc.collect()
 
-        # Calcula a média e o desvio padrão dos erros
+        # Avaliação global para gerar o stats.json
         model.eval()
         with torch.no_grad():
-            reconstructed = model(X_tensor)
-            errors = torch.abs(X_tensor - reconstructed).numpy()
+            reconstructed = model(X_tensor).numpy()
+            errors = np.abs(X_scaled - reconstructed)
 
-        error_df = pd.DataFrame(errors, index=returns_df.index, columns=coins_list)
-        error_mean = error_df.mean(axis=0)  
-        error_std = error_df.std(axis=0)    
+        error_mean = errors.mean(axis=0)  
+        error_std = errors.std(axis=0)    
 
-        # Salva as estatísticas para o Watchdog
         stats = {
             "means": error_mean.tolist(),
             "stds": error_std.tolist(),
@@ -153,21 +162,19 @@ def run_trading_cycle(positions, train_mode=True, is_retry = False):
         with open(STATS_PATH, 'w') as f:
             json.dump(stats, f)
 
-        # Procura oportunidades APENAS se não houver posições
+        # Procura oportunidades se não houver posições
         if len(positions) == 0:
-            zscore_df = (error_df - error_mean) / (error_std + 1e-8)
-            current_zscores = zscore_df.iloc[-1]
-            predicted_df = pd.DataFrame(reconstructed.numpy(), index=returns_df.index, columns=coins_list)
+            # Z-Score do último candle
+            last_errors = errors[-1]
+            zscores = (last_errors - error_mean) / (error_std + 1e-8)
+            
+            max_idx = np.argmax(np.abs(zscores))
+            max_z_coin = coins_list[max_idx]
+            max_z_val = abs(zscores[max_idx])
 
-            max_z_coin = current_zscores.abs().idxmax()
-            max_z_val = abs(current_zscores[max_z_coin])
-
-            # Verifica se atingiu o gatilho e garante que não operamos BTC contra BTC
             if max_z_val > ENTRY_Z and max_z_coin != HEDGE_ASSET:
-                print(f"🚨 ANOMALIA DETECTADA: {max_z_coin} (Z-Score: {max_z_val:.2f})")
-                
-                real_val = returns_df[max_z_coin].iloc[-1]
-                pred_val = predicted_df[max_z_coin].iloc[-1]
+                real_val = last_real_returns[max_idx]
+                pred_val = reconstructed[-1][max_idx]
                 is_buy_anomaly = bool(real_val < pred_val)
 
                 return {
@@ -178,20 +185,14 @@ def run_trading_cycle(positions, train_mode=True, is_retry = False):
                     ],
                     "stats": stats
                 }
-            else:
-                print(f"Zzz... Mercado eficiente. Maior anomalia é {max_z_coin} (Z={max_z_val:.2f}).")
-                return {"type": "wait"}
-        else:
-            return {"type": "wait", "msg": "Posições ativas. Aguardando saída via Watchdog."}
+            return {"type": "wait"}
+        return {"type": "wait", "msg": "Posições ativas."}
 
     else:
-        # ---------------------------------------------------------
-        # MODO WATCHDOG: CARREGA A MEMÓRIA E VERIFICA SAÍDAS
-        # ---------------------------------------------------------
+        # WATCHDOG (5 em 5 minutos) - Inferência super leve
         if not os.path.exists(MODEL_PATH) or not os.path.exists(STATS_PATH):
-            return {"type": "error", "msg": "Arquivos do modelo não encontrados. Aguarde o ciclo de Treino."}
+            return {"type": "error", "msg": "Modelo ausente. Aguarde o Treino."}
 
-        # Carrega o modelo treinado na última hora
         try:
             model.load_state_dict(torch.load(MODEL_PATH))
         except RuntimeError as e:
@@ -200,7 +201,6 @@ def run_trading_cycle(positions, train_mode=True, is_retry = False):
 
           else:
             return run_trading_cycle(positions, train_mode=False, is_retry = True)
-
         model.eval()
 
         with open(STATS_PATH, 'r') as f:
@@ -210,38 +210,26 @@ def run_trading_cycle(positions, train_mode=True, is_retry = False):
             main_coin = [coin for coin in positions if coin != HEDGE_ASSET][0]
             
             if main_coin not in stats["coins"]:
-                return {"type": "error", "msg": "A moeda aberta não está na matriz de dados."}
+                return {"type": "error", "msg": "Moeda não mapeada."}
 
             idx = stats["coins"].index(main_coin)
 
-            # Roda inferência apenas para capturar o erro exato de agora
             with torch.no_grad():
-                reconstructed = model(X_tensor)
-                current_errors = torch.abs(X_tensor[-1] - reconstructed[-1]).numpy()
+                # Fazemos a inferência APENAS do último candle (X_tensor[-1]) para economizar cálculo
+                last_tensor = X_tensor[-1].unsqueeze(0)
+                reconstructed = model(last_tensor).numpy()[0]
+                current_error = np.abs(X_scaled[-1][idx] - reconstructed[idx])
 
-            # Z-Score Residual instantâneo
             mean = stats["means"][idx]
             std = stats["stds"][idx]
-            z_atual = (current_errors[idx] - mean) / (std + 1e-8)
+            z_atual = (current_error - mean) / (std + 1e-8)
             z_atual_abs = abs(float(z_atual))
 
-            print(f"📊 Monitorando {main_coin} | Z-Score Residual: {z_atual_abs:.2f} (Alvo: <= {EXIT_Z})")
-
             if z_atual_abs <= EXIT_Z:
-                print("✅ A anomalia sumiu! Fechando operação para garantir lucro.")
-                return {
-                    "type": "close", 
-                    "coin": main_coin, 
-                    "z_score_atual": z_atual_abs
-                }
-            else:
-                return {
-                    "type": "hold", 
-                    "coin": main_coin, 
-                    "z_score_atual": z_atual_abs
-                }
-        else:
-            return {"type": "wait", "msg": "Nenhuma posição aberta no momento."}
+                return {"type": "close", "coin": main_coin, "z_score": z_atual_abs}
+            return {"type": "hold", "coin": main_coin, "z_score": z_atual_abs}
+            
+        return {"type": "wait"}
 
 # ==========================================
 # MOCK DE EXECUÇÃO LOCAL (PARA TESTE)
@@ -253,7 +241,7 @@ if __name__ == "__main__":
     posicoes_mock = []
     print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: HORA EM HORA ---")
     resultado_treino = run_trading_cycle(posicoes_mock, train_mode=True)
-    print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_treino)
+    # print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_treino)
     
     # Se o robô sugerisse uma entrada, o TS adicionaria ela em 'posicoes_mock'. 
     # Vamos simular que estamos comprados em ARB para testar o Watchdog:
