@@ -98,7 +98,7 @@ def get_market_matrix():
 # ==========================================
 # CÉREBRO DO ROBÔ OTIMIZADO (LOW-MEMORY)
 # ==========================================
-def run_trading_cycle(positions, verify_new_pair=False, train_mode=False):
+def run_trading_cycle(positions, verify_new_pair=False, train_mode=False, is_retry = False):
     agora = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     # Logs amigáveis para você saber exatamente o que o bot está fazendo
@@ -172,7 +172,16 @@ def run_trading_cycle(positions, verify_new_pair=False, train_mode=False):
         if not os.path.exists(MODEL_PATH) or not os.path.exists(STATS_PATH):
             return {"type": "error", "msg": "Modelo ausente. Rode com train_mode=True 1x."}
 
-        model.load_state_dict(torch.load(MODEL_PATH))
+        
+        try:
+            model.load_state_dict(torch.load(MODEL_PATH))
+        except RuntimeError as e:
+          if is_retry:
+            return {"type": "error", "msg": "Falha ao carregar o modelo treinado. Aguarde o ciclo de Treino."}
+
+          else:
+            return run_trading_cycle(positions, train_mode, verify_new_pair, is_retry = True)
+            
         with open(STATS_PATH, 'r') as f:
             stats = json.load(f)
             
@@ -245,13 +254,13 @@ if __name__ == "__main__":
     # Simula o TypeScript pedindo para treinar e buscar entradas (Roda a cada 1 hora)
     posicoes_mock = []
     print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: HORA EM HORA ---")
-    resultado_treino = run_trading_cycle(posicoes_mock, True)
-    # print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_treino)
+    resultado_treino = run_trading_cycle(posicoes_mock, True, False)
+    print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_treino)
     
     # Se o robô sugerisse uma entrada, o TS adicionaria ela em 'posicoes_mock'. 
     # Vamos simular que estamos comprados em ARB para testar o Watchdog:
     posicoes_mock = ["ARB", "BTC"]
     
     print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: 5 EM 5 MINUTOS ---")
-    resultado_watchdog = run_trading_cycle(posicoes_mock, False)
-    print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_watchdog)
+    # resultado_watchdog = run_trading_cycle(posicoes_mock, False)
+    # print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_watchdog)
