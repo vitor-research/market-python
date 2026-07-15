@@ -98,40 +98,43 @@ def get_market_matrix():
 # ==========================================
 # CÉREBRO DO ROBÔ OTIMIZADO (LOW-MEMORY)
 # ==========================================
-def run_trading_cycle(positions, train_mode=True, is_retry=False):
+def run_trading_cycle(positions, verify_new_pair=False, train_mode=False):
     agora = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"\n[{agora}] Iniciando ciclo {'TREINO' if train_mode else 'WATCHDOG'} (Modo Low-Memory)...")
+    
+    # Logs amigáveis para você saber exatamente o que o bot está fazendo
+    # acao = "PROCURAR ENTRADAS" if verify_new_pair else "WATCHDOG (SAÍDA)"
+    # estado = "TREINANDO IA" if train_mode else "USANDO MEMÓRIA"
+    # print(f"\n[{agora}] Ciclo: {acao} | Cérebro: {estado}")
 
-    # 1. Obtenção e Tratamento de Dados (Foco em descartar o que não usa)
+    # =========================================================
+    # 1. OBTENÇÃO DE DADOS (Low-Memory)
+    # =========================================================
     prices_df = get_market_matrix()
     if prices_df.empty:
-        return {"type": "error", "msg": "Falha ao baixar dados da Hyperliquid"}
+        return {"type": "error", "msg": "Falha ao baixar dados"}
 
     coins_list = list(prices_df.columns)
-    
-    # Calcula os retornos e descarta os preços originais para economizar RAM
     returns_df = prices_df.pct_change().dropna().astype(np.float32)
+    
     del prices_df 
     gc.collect()
 
-    # Normalização
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(returns_df).astype(np.float32)
-    X_tensor = torch.tensor(X_scaled) # Mais eficiente que FloatTensor
-    
-    # Pegamos a última linha real (numpy) para uso posterior
+    X_tensor = torch.tensor(X_scaled)
     last_real_returns = returns_df.iloc[-1].values 
     
-    # Limpeza pesada
     del returns_df
     gc.collect()
 
-    # 2. Definição do Modelo
-    model = StatArbAutoencoder(X_scaled.shape[1], bottleneck_dim=BOTTLENECK_DIM)
+    model = StatArbAutoencoder(X_scaled.shape[1])
     criterion = nn.MSELoss()
 
+    # =========================================================
+    # 2. GESTÃO DO MODELO (Treinar vs. Carregar)
+    # =========================================================
     if train_mode:
-        # TREINAMENTO
+        # TREINAMENTO PESADO (Rode 1x ao dia)
         optimizer = optim.Adam(model.parameters(), lr=LR)
         model.train()
         for epoch in range(EPOCHS):
@@ -140,19 +143,18 @@ def run_trading_cycle(positions, train_mode=True, is_retry=False):
             loss.backward()
             optimizer.step()
 
-        # Salva o modelo e limpa variáveis de treino
         torch.save(model.state_dict(), MODEL_PATH)
         del optimizer, loss
         gc.collect()
 
-        # Avaliação global para gerar o stats.json
+        # Calcula a normalidade histórica
         model.eval()
         with torch.no_grad():
-            reconstructed = model(X_tensor).numpy()
-            errors = np.abs(X_scaled - reconstructed)
+            reconstructed_all = model(X_tensor).numpy()
+            errors_all = np.abs(X_scaled - reconstructed_all)
 
-        error_mean = errors.mean(axis=0)  
-        error_std = errors.std(axis=0)    
+        error_mean = errors_all.mean(axis=0)  
+        error_std = errors_all.std(axis=0)    
 
         stats = {
             "means": error_mean.tolist(),
@@ -161,11 +163,38 @@ def run_trading_cycle(positions, train_mode=True, is_retry=False):
         }
         with open(STATS_PATH, 'w') as f:
             json.dump(stats, f)
+            
+        del reconstructed_all, errors_all
+        gc.collect()
 
-        # Procura oportunidades se não houver posições
+    else:
+        # CARREGAMENTO LEVE (Rode o resto do dia)
+        if not os.path.exists(MODEL_PATH) or not os.path.exists(STATS_PATH):
+            return {"type": "error", "msg": "Modelo ausente. Rode com train_mode=True 1x."}
+
+        model.load_state_dict(torch.load(MODEL_PATH))
+        with open(STATS_PATH, 'r') as f:
+            stats = json.load(f)
+            
+        error_mean = np.array(stats["means"], dtype=np.float32)
+        error_std = np.array(stats["stds"], dtype=np.float32)
+
+    # =========================================================
+    # 3. INFERÊNCIA RÁPIDA DO MOMENTO ATUAL
+    # =========================================================
+    # Independente de ter treinado ou não, fazemos a predição só da ÚLTIMA VELA
+    model.eval()
+    with torch.no_grad():
+        last_tensor = X_tensor[-1].unsqueeze(0) # Pega só a vela de agora
+        reconstructed_last = model(last_tensor).numpy()[0]
+        last_errors = np.abs(X_scaled[-1] - reconstructed_last)
+
+    # =========================================================
+    # 4. DECISÃO (Verificar Novo Par vs. Watchdog)
+    # =========================================================
+    if verify_new_pair:
+        # LÓGICA DE ENTRADA
         if len(positions) == 0:
-            # Z-Score do último candle
-            last_errors = errors[-1]
             zscores = (last_errors - error_mean) / (error_std + 1e-8)
             
             max_idx = np.argmax(np.abs(zscores))
@@ -174,7 +203,7 @@ def run_trading_cycle(positions, train_mode=True, is_retry=False):
 
             if max_z_val > ENTRY_Z and max_z_coin != HEDGE_ASSET:
                 real_val = last_real_returns[max_idx]
-                pred_val = reconstructed[-1][max_idx]
+                pred_val = reconstructed_last[max_idx]
                 is_buy_anomaly = bool(real_val < pred_val)
 
                 return {
@@ -185,51 +214,27 @@ def run_trading_cycle(positions, train_mode=True, is_retry=False):
                     ],
                     "stats": stats
                 }
-            return {"type": "wait"}
-        return {"type": "wait", "msg": "Posições ativas."}
+            return {"type": "wait", "msg": f"Mercado calmo. Maior Z-Score: {max_z_coin} ({max_z_val:.2f})"}
+        return {"type": "wait", "msg": "Posições ativas. Aguardando saída."}
 
     else:
-        # WATCHDOG (5 em 5 minutos) - Inferência super leve
-        if not os.path.exists(MODEL_PATH) or not os.path.exists(STATS_PATH):
-            return {"type": "error", "msg": "Modelo ausente. Aguarde o Treino."}
-
-        try:
-            model.load_state_dict(torch.load(MODEL_PATH))
-        except RuntimeError as e:
-          if is_retry:
-            return {"type": "error", "msg": "Falha ao carregar o modelo treinado. Aguarde o ciclo de Treino."}
-
-          else:
-            return run_trading_cycle(positions, train_mode=False, is_retry = True)
-        model.eval()
-
-        with open(STATS_PATH, 'r') as f:
-            stats = json.load(f)
-
+        # LÓGICA DE SAÍDA (WATCHDOG)
         if len(positions) > 0:
             main_coin = [coin for coin in positions if coin != HEDGE_ASSET][0]
             
-            if main_coin not in stats["coins"]:
-                return {"type": "error", "msg": "Moeda não mapeada."}
+            if main_coin not in coins_list:
+                return {"type": "error", "msg": "Moeda aberta sumiu dos dados."}
 
-            idx = stats["coins"].index(main_coin)
-
-            with torch.no_grad():
-                # Fazemos a inferência APENAS do último candle (X_tensor[-1]) para economizar cálculo
-                last_tensor = X_tensor[-1].unsqueeze(0)
-                reconstructed = model(last_tensor).numpy()[0]
-                current_error = np.abs(X_scaled[-1][idx] - reconstructed[idx])
-
-            mean = stats["means"][idx]
-            std = stats["stds"][idx]
-            z_atual = (current_error - mean) / (std + 1e-8)
+            idx = coins_list.index(main_coin)
+            
+            z_atual = (last_errors[idx] - error_mean[idx]) / (error_std[idx] + 1e-8)
             z_atual_abs = abs(float(z_atual))
 
             if z_atual_abs <= EXIT_Z:
                 return {"type": "close", "coin": main_coin, "z_score": z_atual_abs}
             return {"type": "hold", "coin": main_coin, "z_score": z_atual_abs}
             
-        return {"type": "wait"}
+        return {"type": "wait", "msg": "Nenhuma posição aberta."}
 
 # ==========================================
 # MOCK DE EXECUÇÃO LOCAL (PARA TESTE)
