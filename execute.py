@@ -1,213 +1,254 @@
-"""
-================================================================================
- EXECUTOR STAT-ARB (LIVE TRADING) COM ONNX - VERSÃO ENXUTA
- - O TypeScript cuida da margem, saldo e netting.
- - Este script faz apenas inferência ML e validação de contexto.
- - Retorna a direção (is_buy) e o peso (beta_weight) para alocação.
-================================================================================
-"""
-
 import os
 import json
-import warnings
-warnings.filterwarnings("ignore")
-
+import time
+import datetime
+import requests
 import numpy as np
 import pandas as pd
-import onnxruntime as rt
-import ccxt
-from urllib.parse import unquote
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.preprocessing import StandardScaler
+import warnings
 
-class Config:
-    exchange_id = "hyperliquid"
-    timeframe = "1h"
-    lookback_bars = 150              
-    
-    # Filtros de Gatilho e Contexto (Idênticos ao Backtest)
-    zscore_window = 60
-    entry_z = 1.5                    
-    
-    ml_proba_high = 0.65             
-    ml_proba_med = 0.55              
-    ml_proba_min = 0.50              
-    extreme_z = 2.5                  
+warnings.filterwarnings('ignore')
 
-    model_dir = "./models"
+# ==========================================
+# 1. CONFIGURAÇÕES DA ESTRATÉGIA
+# ==========================================
+BOTTLENECK_DIM = 6
+LR = 0.0012
+ENTRY_Z = 4.0412
+EXIT_Z = 0.2856
 
-CFG = Config()
+LEVERAGE = 2
+ALLOCATION_PER_LEG = 0.95 
+HEDGE_ASSET = "BTC"       
 
-def fetch_live_data(symbols: list, cfg: Config) -> pd.DataFrame:
-    exchange = getattr(ccxt, cfg.exchange_id)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-    data = {}
-    for sym in symbols:
-        try:
-            batch = exchange.fetch_ohlcv(sym, timeframe=cfg.timeframe, limit=cfg.lookback_bars)
-            if batch:
-                df = pd.DataFrame(batch, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                data[sym] = df.drop_duplicates(subset="timestamp").set_index("timestamp")["close"]
-        except Exception:
-            continue
-            
-    if not data: return pd.DataFrame()
-    return pd.DataFrame(data).ffill().dropna()
+UNIVERSE_SIZE = 45       
+TIMEFRAME = "1h"         
+DAYS_HISTORY = 45        
+EPOCHS = 60
 
-def check_pairs_to_close(current_coins_in_positions):
-    """
-    Verifica o Z-Score atual de todos os pares ativos.
-    Se |Z-Score| > 4.5, encerra as posições dos ativos envolvidos.
-    """
-    # print(">> Verificando integridade estatística dos pares (Stop Loss Estrutural)...")
+# Caminhos para salvar a memória do robô
+MODEL_PATH = "stat_arb_model.pth"
+STATS_PATH = "market_stats.json"
 
-    portfolio_path = os.path.join(CFG.model_dir, "portfolio.json")
-    if not os.path.exists(portfolio_path): return []
-            
-    with open(portfolio_path, "r") as f:
-        portfolio = json.load(f)
-        
-    if not portfolio: return []
+base_url = "https://api.hyperliquid.xyz"
 
+# ==========================================
+# 2. AUTOENCODER
+# ==========================================
+class StatArbAutoencoder(nn.Module):
+    def __init__(self, input_dim):
+        super(StatArbAutoencoder, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 32), nn.ReLU(),
+            nn.Linear(32, 16), nn.ReLU(),
+            nn.Linear(16, BOTTLENECK_DIM)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(BOTTLENECK_DIM, 16), nn.ReLU(),
+            nn.Linear(16, 32), nn.ReLU(),
+            nn.Linear(32, input_dim)
+        )
+    def forward(self, x):
+        return self.decoder(self.encoder(x))
 
-    pairs_to_close = []
-    
-    # 1. Identificar quais pares estão com posições abertas
-
-    # 2. Calcular Z-Score em tempo real para cada par ativo
-    for pair_id, meta in portfolio.items():
-        if not (meta['asset_y'].split("/")[0] in current_coins_in_positions) or not (meta["asset_x"].split("/")[0] in current_coins_in_positions):
-            continue
-
-        # Busca dados atualizados para calcular o Z-Score agora
-        prices = fetch_live_data([meta['asset_y'], meta['asset_x']], CFG)
-        
-        if prices.empty: continue
-        
-        # Calcula Z-Score (usando a mesma lógica do backtest)
-        spread = prices[meta['asset_y']] - meta['beta'] * prices[meta['asset_x']]
-        mean = spread.rolling(CFG.zscore_window).mean().iloc[-1]
-        std = spread.rolling(CFG.zscore_window).std().iloc[-1]
-        
-        current_z = (spread.iloc[-1] - mean) / (std + 1e-9)
-        
-        # print(f"🔍 Monitoramento [{pair_id}]: Z-Score = {current_z:.2f}")
-
-        # 3. Limite de Segurança de 4.5
-        if abs(current_z) > 4.5 or abs(current_z) < 1.5:
-            # print(f"🚨 STOP LOSS ESTRUTURAL [ {pair_id} ]! Z-Score: {current_z:.2f}")
-            
-            # Fecha as duas pernas do par
-            # Aqui assumimos que você tem uma função para fechar (market order oposta ou zerar)
-            # Exemplo genérico de fechamento:
-            for asset in [meta['asset_y'].split("/")[0], meta['asset_x'].split("/")[0]]:
-                # Comando para zerar a posição (Hyperliquid geralmente aceita volume 0 para zerar)
-                # Substitua pela sua função real de envio de ordem
-                pairs_to_close.append(asset)
-            
-            # print(f"✅ Par {pair_id} encerrado com sucesso.")
-    
-    return pairs_to_close
-
-def build_features(price_y: pd.Series, price_x: pd.Series, beta: float, cfg: Config) -> pd.DataFrame:
-    # A ordem exata das features é crucial para o ONNX
-    spread = price_y - beta * price_x
-    zscore = (spread - spread.rolling(cfg.zscore_window).mean()) / spread.rolling(cfg.zscore_window).std()
-    
-    feat = pd.DataFrame(index=spread.index)
-    feat["zscore"] = zscore
-    feat["zscore_abs"] = zscore.abs()
-    feat["spread_vol_short"] = spread.rolling(10).std()
-    feat["spread_vol_long"] = spread.rolling(cfg.zscore_window).std()
-    feat["vol_ratio"] = feat["spread_vol_short"] / (feat["spread_vol_long"] + 1e-9)
-    feat["momentum_y"] = price_y.pct_change(10)
-    feat["momentum_x"] = price_x.pct_change(10)
-    
-    return feat.replace([np.inf, -np.inf], np.nan).dropna()
-
-def get_live_signals() -> list:
-    portfolio_path = os.path.join(CFG.model_dir, "portfolio.json")
-    if not os.path.exists(portfolio_path): return []
-        
-    with open(portfolio_path, "r") as f:
-        portfolio = json.load(f)
-        
-    if not portfolio: return []
-
-    unique_symbols = set()
-    for meta in portfolio.values():
-        unique_symbols.add(meta["asset_y"])
-        unique_symbols.add(meta["asset_x"])
-        
-    prices = fetch_live_data(list(unique_symbols), CFG)
-    if prices.empty: return []
-
-    active_signals = []
-    
-    for pair_id, meta in portfolio.items():
-        y_sym, x_sym = meta["asset_y"], meta["asset_x"]
-        if y_sym not in prices.columns or x_sym not in prices.columns:
-            continue
-            
-        feat = build_features(prices[y_sym], prices[x_sym], meta["beta"], CFG)
-        if feat.empty: continue
-            
-        current_features = feat.iloc[-1:].values 
-        z = feat["zscore"].iloc[-1]
-        vol_ratio = feat["vol_ratio"].iloc[-1]
-        
-        # 1. Padronização salva do treino
-        scaler_mean = np.array(meta["scaler_mean"])
-        scaler_scale = np.array(meta["scaler_scale"])
-        X_scaled = (current_features - scaler_mean) / scaler_scale
-        
-        # 2. Inferência ONNX
-        sess = rt.InferenceSession(meta["onnx_model"], providers=['CPUExecutionProvider'])
-        input_name = sess.get_inputs()[0].name
-        label_name = sess.get_outputs()[1].name 
-        pred_onx = sess.run([label_name], {input_name: X_scaled.astype(np.float32)})[0]
-        
-        p = float(pred_onx[0].get(1, 0.0)) 
-        
-        # 3. Lógica de Contexto (IDÊNTICA AO BACKTEST)
-        high_conviction = p >= CFG.ml_proba_high
-        med_conviction_calm = (p >= CFG.ml_proba_med) and (vol_ratio < 1.0)
-        extreme_stretch = (abs(z) >= CFG.extreme_z) and (p >= CFG.ml_proba_min)
-
-        action = None
-        if high_conviction or med_conviction_calm or extreme_stretch:
-            if z > CFG.entry_z:
-                action = "SHORT_SPREAD"
-            elif z < -CFG.entry_z:
-                action = "LONG_SPREAD"
-                
-        if action:
-            # Limpa o formato para o TypeScript (ex: XYZ-BTC/USDC:USDC vira BTC)
-            coin_y = y_sym.split("/")[0].replace("XYZ-", "")
-            coin_x = x_sym.split("/")[0].replace("XYZ-", "")
-            
-            active_signals.append({
-                "pair_id": pair_id,
-                "ml_probability": round(p, 4),
-                "zscore": round(z, 2),
-                "execution": [
-                    {
-                        "coin": coin_y,
-                        "is_buy": action == "LONG_SPREAD",
-                        "weight": 1.0 # O TypeScript usa isso para alocar 1 parte do capital
-                    },
-                    {
-                        "coin": coin_x,
-                        "is_buy": action == "SHORT_SPREAD",
-                        "weight": round(abs(meta["beta"]), 4) # O TypeScript multiplica o capital por isso (Hedge)
-                    }
-                ]
-            })
-            
-    return active_signals
-
-if __name__ == "__main__":
+# ==========================================
+# 3. MOTOR DE DADOS
+# ==========================================
+def fetch_candle_data(coin):
+    end_time = int(time.time() * 1000)
+    start_time = end_time - (DAYS_HISTORY * 24 * 60 * 60 * 1000)
+    payload = {"type": "candleSnapshot", "req": {"coin": coin, "interval": TIMEFRAME, "startTime": start_time, "endTime": end_time}}
     try:
-        # Não precisa mais receber argumento de capital via linha de comando
-        ordens = get_live_signals()
-        print(json.dumps(ordens))
-    except Exception as e:
-        print(json.dumps([]))
+        response = requests.post(f"{base_url}/info", json=payload).json()
+        if not response or not isinstance(response, list): return None
+        df = pd.DataFrame(response)
+        df['datetime'] = pd.to_datetime(df['t'], unit='ms')
+        df.set_index('datetime', inplace=True)
+        return pd.to_numeric(df['c'])
+    except: return None
+
+def get_market_matrix():
+    universe = requests.post(f"{base_url}/info", json={"type": "meta"}).json().get("universe", [])
+    coins = [c["name"] for c in universe][:UNIVERSE_SIZE + 10]
+    
+    data = {}
+    for coin in coins:
+        series = fetch_candle_data(coin)
+        if series is not None and not series.empty: data[coin] = series
+        time.sleep(0.05)
+        
+    df = pd.DataFrame(data).dropna(axis=1, thresh=int(DAYS_HISTORY*24*0.9)).ffill().bfill()
+    return df[df.columns[:UNIVERSE_SIZE]]
+
+# ==========================================
+# 4. O CÉREBRO DO ROBÔ (API PARA O TYPESCRIPT)
+# ==========================================
+def run_trading_cycle(positions, train_mode=True, is_retry = False):
+    agora = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"\n[{agora}] Iniciando ciclo de {'TREINO (1h)' if train_mode else 'WATCHDOG (5min)'}...")
+    # print(f"💰 Patrimônio Base: U$ {equity:.2f} | Posições Abertas: {len(positions)}")
+    print(f"Posições Abertas: {len(positions)}")
+
+    # Baixa dados recentes
+    prices_df = get_market_matrix()
+    if prices_df.empty:
+        return {"type": "error", "msg": "Falha ao baixar dados da Hyperliquid"}
+
+    returns_df = prices_df.pct_change().dropna()
+    coins_list = list(returns_df.columns)
+
+    # Padroniza os dados
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(returns_df)
+    X_tensor = torch.FloatTensor(X_scaled)
+
+    model = StatArbAutoencoder(X_scaled.shape[1])
+    criterion = nn.MSELoss()
+
+    if train_mode:
+        # ---------------------------------------------------------
+        # MODO TREINO: APRENDE O MERCADO E PROCURA ENTRADAS
+        # ---------------------------------------------------------
+        optimizer = optim.Adam(model.parameters(), lr=LR)
+        model.train()
+        for _ in range(EPOCHS):
+            optimizer.zero_grad()
+            loss = criterion(model(X_tensor), X_tensor)
+            loss.backward()
+            optimizer.step()
+
+        # Salva o "Cérebro" para o Watchdog poder usar depois
+        torch.save(model.state_dict(), MODEL_PATH)
+
+        # Calcula a média e o desvio padrão dos erros
+        model.eval()
+        with torch.no_grad():
+            reconstructed = model(X_tensor)
+            errors = torch.abs(X_tensor - reconstructed).numpy()
+
+        error_df = pd.DataFrame(errors, index=returns_df.index, columns=coins_list)
+        error_mean = error_df.mean(axis=0)  
+        error_std = error_df.std(axis=0)    
+
+        # Salva as estatísticas para o Watchdog
+        stats = {
+            "means": error_mean.tolist(),
+            "stds": error_std.tolist(),
+            "coins": coins_list
+        }
+        with open(STATS_PATH, 'w') as f:
+            json.dump(stats, f)
+
+        # Procura oportunidades APENAS se não houver posições
+        if len(positions) == 0:
+            zscore_df = (error_df - error_mean) / (error_std + 1e-8)
+            current_zscores = zscore_df.iloc[-1]
+            predicted_df = pd.DataFrame(reconstructed.numpy(), index=returns_df.index, columns=coins_list)
+
+            max_z_coin = current_zscores.abs().idxmax()
+            max_z_val = abs(current_zscores[max_z_coin])
+
+            # Verifica se atingiu o gatilho e garante que não operamos BTC contra BTC
+            if max_z_val > ENTRY_Z and max_z_coin != HEDGE_ASSET:
+                print(f"🚨 ANOMALIA DETECTADA: {max_z_coin} (Z-Score: {max_z_val:.2f})")
+                
+                real_val = returns_df[max_z_coin].iloc[-1]
+                pred_val = predicted_df[max_z_coin].iloc[-1]
+                is_buy_anomaly = bool(real_val < pred_val)
+
+                return {
+                    "type": "open",
+                    "pair": [
+                        {"coin": max_z_coin, "is_buy": is_buy_anomaly},
+                        {"coin": HEDGE_ASSET, "is_buy": not is_buy_anomaly}
+                    ],
+                    "stats": stats
+                }
+            else:
+                print(f"Zzz... Mercado eficiente. Maior anomalia é {max_z_coin} (Z={max_z_val:.2f}).")
+                return {"type": "wait"}
+        else:
+            return {"type": "wait", "msg": "Posições ativas. Aguardando saída via Watchdog."}
+
+    else:
+        # ---------------------------------------------------------
+        # MODO WATCHDOG: CARREGA A MEMÓRIA E VERIFICA SAÍDAS
+        # ---------------------------------------------------------
+        if not os.path.exists(MODEL_PATH) or not os.path.exists(STATS_PATH):
+            return {"type": "error", "msg": "Arquivos do modelo não encontrados. Aguarde o ciclo de Treino."}
+
+        # Carrega o modelo treinado na última hora
+        try:
+            model.load_state_dict(torch.load(MODEL_PATH))
+        except RuntimeError as e:
+          if is_retry:
+            return {"type": "error", "msg": "Falha ao carregar o modelo treinado. Aguarde o ciclo de Treino."}
+
+          else:
+            return run_trading_cycle(positions, train_mode=True, is_retry = True)
+
+        model.eval()
+
+        with open(STATS_PATH, 'r') as f:
+            stats = json.load(f)
+
+        if len(positions) > 0:
+            main_coin = [coin for coin in positions if coin != HEDGE_ASSET][0]
+            
+            if main_coin not in stats["coins"]:
+                return {"type": "error", "msg": "A moeda aberta não está na matriz de dados."}
+
+            idx = stats["coins"].index(main_coin)
+
+            # Roda inferência apenas para capturar o erro exato de agora
+            with torch.no_grad():
+                reconstructed = model(X_tensor)
+                current_errors = torch.abs(X_tensor[-1] - reconstructed[-1]).numpy()
+
+            # Z-Score Residual instantâneo
+            mean = stats["means"][idx]
+            std = stats["stds"][idx]
+            z_atual = (current_errors[idx] - mean) / (std + 1e-8)
+            z_atual_abs = abs(float(z_atual))
+
+            print(f"📊 Monitorando {main_coin} | Z-Score Residual: {z_atual_abs:.2f} (Alvo: <= {EXIT_Z})")
+
+            if z_atual_abs <= EXIT_Z:
+                print("✅ A anomalia sumiu! Fechando operação para garantir lucro.")
+                return {
+                    "type": "close", 
+                    "coin": main_coin, 
+                    "z_score_atual": z_atual_abs
+                }
+            else:
+                return {
+                    "type": "hold", 
+                    "coin": main_coin, 
+                    "z_score_atual": z_atual_abs
+                }
+        else:
+            return {"type": "wait", "msg": "Nenhuma posição aberta no momento."}
+
+# ==========================================
+# MOCK DE EXECUÇÃO LOCAL (PARA TESTE)
+# ==========================================
+if __name__ == "__main__":
+    print("🚀 SISTEMA STAT-ARB CARREGADO")
+    
+    # Simula o TypeScript pedindo para treinar e buscar entradas (Roda a cada 1 hora)
+    posicoes_mock = []
+    print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: HORA EM HORA ---")
+    resultado_treino = run_trading_cycle(posicoes_mock, train_mode=True)
+    print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_treino)
+    
+    # Se o robô sugerisse uma entrada, o TS adicionaria ela em 'posicoes_mock'. 
+    # Vamos simular que estamos comprados em ARB para testar o Watchdog:
+    posicoes_mock = ["ARB", "BTC"]
+    
+    print("\n--- SIMULANDO CHAMADA DO TYPESCRIPT: 5 EM 5 MINUTOS ---")
+    resultado_watchdog = run_trading_cycle(posicoes_mock, train_mode=False)
+    print("RESPOSTA JSON PARA O TYPESCRIPT:", resultado_watchdog)

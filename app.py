@@ -6,7 +6,7 @@ import onnxruntime as rt
 import numpy as np
 import warnings
 from flask_cors import CORS # 1. Importe a biblioteca
-from execute import get_live_signals, check_pairs_to_close
+from execute import run_trading_cycle
 import json
 
 warnings.filterwarnings("ignore")
@@ -125,13 +125,9 @@ def scan_market():
     # if not MODELS_CACHE:
     #     return jsonify({"error": "Modelos não carregados na RAM. Rode o treinamento e faça /reload."}), 404
 
-    signals_found = get_live_signals()
+    result = run_trading_cycle([], True)
 
-    return jsonify({
-        "status": "sucesso",
-        "total_signals": len(signals_found),
-        "signals": signals_found
-    }), 200
+    return jsonify(result), 200
 
 @app.route("/verify_pairs")
 def verify_pairs():
@@ -141,13 +137,9 @@ def verify_pairs():
         return jsonify({"error": e}), 400
 
 
-    pairs = check_pairs_to_close(pairs)
+    result = run_trading_cycle(pairs, False)
 
-    return jsonify({
-        "status": "sucesso",
-        "total_signals": len(pairs),
-        "signals": pairs
-    }), 200
+    return jsonify(result), 200
 
 @app.route('/reload', methods=['POST'])
 def reload_models():
