@@ -125,9 +125,14 @@ def scan_market():
     # if not MODELS_CACHE:
     #     return jsonify({"error": "Modelos não carregados na RAM. Rode o treinamento e faça /reload."}), 404
 
-    result = run_trading_cycle([], True)
+    try:
+        result = run_trading_cycle([], True)
+        return jsonify(result), 200
 
-    return jsonify(result), 200
+    except Exception as e:
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 @app.route("/verify_pairs")
 def verify_pairs():

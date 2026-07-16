@@ -221,7 +221,7 @@ def run_trading_cycle(positions, verify_new_pair=False, train_mode=False, is_ret
                         {"coin": max_z_coin, "is_buy": is_buy_anomaly},
                         {"coin": HEDGE_ASSET, "is_buy": not is_buy_anomaly}
                     ],
-                    "stats": stats
+                    # "stats": stats
                 }
             return {"type": "wait", "msg": f"Mercado calmo. Maior Z-Score: {max_z_coin} ({max_z_val:.2f})"}
         return {"type": "wait", "msg": "Posições ativas. Aguardando saída."}
