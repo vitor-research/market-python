@@ -132,7 +132,7 @@ def scan_market():
     except Exception as e:
         return jsonify({
             "error": str(e)
-        }), 500
+        }), 200
 
 @app.route("/verify_pairs")
 def verify_pairs():
