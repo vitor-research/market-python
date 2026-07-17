@@ -109,7 +109,15 @@ def run_trading_cycle(positions, verify_new_pair=False, train_mode=False, is_ret
     # =========================================================
     # 1. OBTENÇÃO DE DADOS (Low-Memory)
     # =========================================================
-    prices_df = get_market_matrix()
+    try:
+        prices_df = get_market_matrix()
+    except RuntimeError as e:
+        if is_retry:
+            return {"type": "error", "msg": "Falha ao baixar dados"}
+
+        else:
+            return run_trading_cycle(positions, train_mode, verify_new_pair, is_retry = True)
+    
     if prices_df.empty:
         return {"type": "error", "msg": "Falha ao baixar dados"}
 
