@@ -17,10 +17,10 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. CONFIGURAÇÕES DA ESTRATÉGIA
 # ==========================================
-BOTTLENECK_DIM = 6
-LR = 0.0012
-ENTRY_Z = 4.0412
-EXIT_Z = 0.2856
+BOTTLENECK_DIM = 7
+LR = 0.0026
+ENTRY_Z = 3.0049
+EXIT_Z = 0.1976
 
 LEVERAGE = 2
 ALLOCATION_PER_LEG = 0.95 
